@@ -164,6 +164,7 @@ _MULTIMODAL_MODELS = {
     "H2OVLChatModel": ("h2ovl", "H2OVLChatModel"),
     "InternVLChatModel": ("internvl", "InternVLChatModel"),
     "Idefics3ForConditionalGeneration":("idefics3","Idefics3ForConditionalGeneration"),
+    "KinoQwen2_5_VLForConditionalGeneration": ("kino_qwen2_5_vl", "KinoQwen2_5_VLForConditionalGeneration"),
     "LlavaForConditionalGeneration": ("llava", "LlavaForConditionalGeneration"),
     "LlavaNextForConditionalGeneration": ("llava_next", "LlavaNextForConditionalGeneration"),  # noqa: E501
     "LlavaNextVideoForConditionalGeneration": ("llava_next_video", "LlavaNextVideoForConditionalGeneration"),  # noqa: E501
