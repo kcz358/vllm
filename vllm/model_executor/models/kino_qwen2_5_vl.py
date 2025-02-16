@@ -33,13 +33,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from transformers import BatchFeature
-from transformers.models.qwen2_5_vl import (Qwen2_5_VLImageProcessor,
-                                            Qwen2_5_VLProcessor)
+from transformers.models.qwen2_5_vl import Qwen2_5_VLImageProcessor
 from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import (
     Qwen2_5_VLConfig, Qwen2_5_VLVisionConfig)
-from transformers.models.qwen2_audio import (Qwen2AudioConfig,
-                                             Qwen2AudioEncoder,
-                                             Qwen2AudioProcessor)
+from transformers.models.qwen2_audio import Qwen2AudioEncoder
+from transformers.models.whisper import WhisperFeatureExtractor
 
 from vllm.attention import AttentionMetadata
 from vllm.config import VllmConfig
@@ -64,15 +62,15 @@ from vllm.platforms import _Backend
 from vllm.sequence import IntermediateTensors
 from vllm.transformers_utils.config import uses_mrope
 
+from .custom.configuration_kino_qwen2_5 import KinoQwen2_5_VLConfig
+from .custom.processing_kino_qwen2_5 import KinoQwen2_5_VLProcessor
 from .interfaces import SupportsLoRA, SupportsMultiModal, SupportsPP
-from .qwen2_vl import Qwen2VLDummyInputsBuilder as Qwen2_5_VLDummyInputsBuilder
 from .qwen2_vl import (Qwen2VLMultiModalProcessor, Qwen2VLProcessingInfo,
                        apply_rotary_pos_emb_vision)
 from .utils import (AutoWeightsLoader, WeightsMapper,
                     init_vllm_registered_model, maybe_prefix,
                     merge_multimodal_embeddings)
 from .vision import get_vit_attn_backend
-from .config.configuration_kino_qwen2_5 import KinoQwen2_5_VLConfig
 
 logger = init_logger(__name__)
 
@@ -174,21 +172,22 @@ class Qwen2AudioInputs(TypedDict):
 
 # # === Audio Encoder === #
 class AudioMultiModalProjector(nn.Module):
+
     def __init__(self, config: KinoQwen2_5_VLConfig):
         super().__init__()
-        self.linear = nn.Linear(
-            config.audio_config.d_model, config.hidden_size, bias=True
-        )
+        self.linear = nn.Linear(config.audio_config.d_model,
+                                config.hidden_size,
+                                bias=True)
 
     def forward(self, audio_features):
         hidden_states = self.linear(audio_features)
         return hidden_states
 
+
 def _get_feat_extract_output_lengths(input_lengths: torch.Tensor):
     feat_lengths = (input_lengths - 1) // 2 + 1
     output_lengths = (feat_lengths - 2) // 2 + 1
     return feat_lengths, output_lengths
-
 
 
 # === Vision Encoder === #
@@ -715,7 +714,7 @@ class Qwen2_5_VisionTransformer(nn.Module):
 class Qwen2_5_VLProcessingInfo(Qwen2VLProcessingInfo):
 
     def get_hf_config(self):
-        return self.ctx.get_hf_config(Qwen2_5_VLConfig)
+        return self.ctx.get_hf_config(KinoQwen2_5_VLConfig)
 
     def get_hf_processor(
         self,
@@ -723,8 +722,8 @@ class Qwen2_5_VLProcessingInfo(Qwen2VLProcessingInfo):
         min_pixels: Optional[int] = None,
         max_pixels: Optional[int] = None,
         fps: Optional[float] = 2.0,
-    ) -> Qwen2_5_VLProcessor:
-        hf_processor = self.ctx.get_hf_processor(Qwen2_5_VLProcessor)
+    ) -> KinoQwen2_5_VLProcessor:
+        hf_processor = self.ctx.get_hf_processor(KinoQwen2_5_VLProcessor)
         image_processor = hf_processor.image_processor  # type: ignore
         assert isinstance(image_processor, Qwen2_5_VLImageProcessor)
 
@@ -756,6 +755,34 @@ class Qwen2_5_VLProcessingInfo(Qwen2VLProcessingInfo):
         assert isinstance(image_processor, Qwen2_5_VLImageProcessor)
         return image_processor
 
+    def get_supported_mm_limits(self) -> Mapping[str, Optional[int]]:
+        return {"image": None, "video": None, "audio": None}
+
+    def get_mm_max_tokens_per_item(
+        self,
+        seq_len: int,
+        mm_counts: Mapping[str, int],
+    ) -> Mapping[str, int]:
+        hf_config = self.get_hf_config()
+        max_source_positions = hf_config.audio_config.max_source_positions
+        max_output_lengths = (max_source_positions - 2) // 2 + 1
+        return {
+            "image": self.get_max_image_tokens(),
+            "video": self.get_max_video_tokens(seq_len),
+            "audio": max_output_lengths,
+        }
+
+    def get_audio_processor(
+        self,
+        *,
+        # Ignored in initialization
+        sampling_rate: Optional[int] = None,
+    ) -> WhisperFeatureExtractor:
+        hf_processor = self.get_hf_processor(sampling_rate=sampling_rate)
+        feature_extractor = hf_processor.audio_processor  # type: ignore
+        assert isinstance(feature_extractor, WhisperFeatureExtractor)
+        return feature_extractor
+
 
 class Qwen2_5_VLMultiModalProcessor(Qwen2VLMultiModalProcessor):
 
@@ -774,8 +801,8 @@ class Qwen2_5_VLMultiModalProcessor(Qwen2VLMultiModalProcessor):
     Qwen2_5_VLMultiModalProcessor,
     info=Qwen2_5_VLProcessingInfo,
     dummy_inputs=Qwen2_5_VLDummyInputsBuilder)
-class Qwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
-                                         SupportsLoRA, SupportsPP):
+class KinoQwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
+                                             SupportsLoRA, SupportsPP):
     packed_modules_mapping = {
         "qkv_proj": [
             "q_proj",
@@ -908,7 +935,7 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
                 type="image_embeds",
                 image_embeds=image_embeds,
                 image_grid_thw=image_grid_thw)
-    
+
     def _parse_and_validate_audio_input(
             self, **kwargs: object) -> Optional[Qwen2AudioInputs]:
         audio_values = kwargs.pop('audio_values', None)
@@ -1000,7 +1027,6 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
         sizes = grid_thw.prod(-1) // merge_size // merge_size
 
         return video_embeds.split(sizes.tolist())
-    
 
     def _process_audio_input(self,
                              audio_input: Qwen2AudioInputs) -> torch.Tensor:
@@ -1050,7 +1076,6 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
         return torch.split(masked_audio_features,
                            audio_output_lengths.flatten().tolist())
 
-
     def _parse_and_validate_multimodal_inputs(self, **kwargs: object) -> dict:
         modalities = {}
 
@@ -1065,8 +1090,8 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
                              "video_embeds") and "videos" not in modalities:
                 modalities["videos"] = self._parse_and_validate_video_input(
                     **kwargs)
-            if input_key in ("audio_values",
-                             "audio_attention_mask") and "audios" not in modalities:
+            if input_key in ("audio_values", "audio_attention_mask"
+                             ) and "audios" not in modalities:
                 modalities["audios"] = self._parse_and_validate_audio_input(
                     **kwargs)
         return modalities
@@ -1107,8 +1132,10 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
         inputs_embeds = self.language_model.get_input_embeddings(input_ids)
         if multimodal_embeddings is not None:
             inputs_embeds = merge_multimodal_embeddings(
-                input_ids, inputs_embeds, multimodal_embeddings,
-                [self.config.image_token_id, self.config.video_token_id, self.config.audio_token_id])
+                input_ids, inputs_embeds, multimodal_embeddings, [
+                    self.config.image_token_id, self.config.video_token_id,
+                    self.config.audio_token_id
+                ])
         return inputs_embeds
 
     def get_input_embeddings_v0(
