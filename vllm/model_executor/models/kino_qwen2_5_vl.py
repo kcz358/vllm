@@ -776,7 +776,8 @@ class KinoQwen2_5_VLMultiModalDataParser(MultiModalDataParser):
 class KinoQwen2_5_VLProcessingInfo(Qwen2VLProcessingInfo):
 
     def get_hf_config(self):
-        return self.ctx.get_hf_config(KinoQwen2_5_VLConfig)
+        # return self.ctx.get_hf_config(KinoQwen2_5_VLConfig)
+        return self.ctx.model_config.hf_config
 
     def get_hf_processor(
         self,
@@ -784,6 +785,7 @@ class KinoQwen2_5_VLProcessingInfo(Qwen2VLProcessingInfo):
         min_pixels: Optional[int] = None,
         max_pixels: Optional[int] = None,
         fps: Optional[float] = 2.0,
+        sampling_rate: Optional[int] = 16000,
     ) -> KinoQwen2_5_VLProcessor:
         hf_processor = self.ctx.get_hf_processor(KinoQwen2_5_VLProcessor)
         image_processor = hf_processor.image_processor  # type: ignore
@@ -840,7 +842,7 @@ class KinoQwen2_5_VLProcessingInfo(Qwen2VLProcessingInfo):
         # Ignored in initialization
         sampling_rate: Optional[int] = None,
     ) -> WhisperFeatureExtractor:
-        hf_processor = self.get_hf_processor(sampling_rate=sampling_rate)
+        hf_processor = self.get_hf_processor()
         feature_extractor = hf_processor.audio_processor  # type: ignore
         assert isinstance(feature_extractor, WhisperFeatureExtractor)
         return feature_extractor
@@ -957,7 +959,7 @@ class KinoQwen2_5_VLMultiModalProcessor(BaseMultiModalProcessor[KinoQwen2_5_VLPr
         merge_length = image_processor.merge_size**2
 
         def get_replacement_qwen2vl(item_idx: int, modality: str):
-            if "modality" != "audio":
+            if modality != "audio":
                 grid_thw = out_mm_kwargs[f"{modality}_grid_thw"][item_idx]
                 assert isinstance(grid_thw, torch.Tensor)
 
@@ -1062,8 +1064,7 @@ class KinoQwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
         )
 
         self.audio_tower = Qwen2AudioEncoder(config.audio_config)
-        self.multi_modal_projector = AudioMultiModalProjector(
-            config.audio_config.d_model, config.text_config.hidden_size)
+        self.audio_modal_projector = AudioMultiModalProjector(config)
 
         self.make_empty_intermediate_tensors = (
             self.language_model.make_empty_intermediate_tensors)
@@ -1090,10 +1091,10 @@ class KinoQwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
         if isinstance(mm_input, torch.Tensor):
             if mm_input.ndim == 2:
                 return mm_input
-            if mm_input.ndim != 3:
-                raise ValueError(f"{name} should be 2D or batched 3D tensor. "
-                                 f"Got ndim: {mm_input.ndim} "
-                                 f"(shape={mm_input.shape})")
+            # if mm_input.ndim != 3:
+                # raise ValueError(f"{name} should be 2D or batched 3D tensor. "
+                                 # f"Got ndim: {mm_input.ndim} "
+                                 # f"(shape={mm_input.shape})")
             return torch.concat(list(mm_input))
         else:
             return torch.concat(mm_input)
@@ -1262,7 +1263,7 @@ class KinoQwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
         audio_outputs = self.audio_tower(audio_values,
                                          attention_mask=audio_attention_mask)
         selected_audio_feature = audio_outputs.last_hidden_state
-        audio_features = self.multi_modal_projector(selected_audio_feature)
+        audio_features = self.audio_modal_projector(selected_audio_feature)
         num_audios, max_audio_tokens, embed_dim = audio_features.shape
         audio_output_lengths = audio_output_lengths.unsqueeze(1)
         audio_features_mask = torch.arange(max_audio_tokens).expand(
