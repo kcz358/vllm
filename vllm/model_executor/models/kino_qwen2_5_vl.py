@@ -25,7 +25,7 @@
 # limitations under the License.
 """Inference-only Qwen2.5-VL model compatible with HuggingFace weights."""
 from functools import cached_property, partial
-from typing import (Callable, Iterable, List, Literal, Mapping, Optional, Set,
+from typing import (Any, Callable, Iterable, List, Literal, Mapping, Optional, Set,
                     Tuple, TypedDict, Union)
 
 import torch
@@ -61,6 +61,15 @@ from vllm.multimodal.inputs import MultiModalFieldConfig
 from vllm.platforms import _Backend
 from vllm.sequence import IntermediateTensors
 from vllm.transformers_utils.config import uses_mrope
+from vllm.multimodal.profiling import BaseDummyInputsBuilder, ProcessorInputs
+from vllm.multimodal.parse import (AudioProcessorItems, DictEmbeddingItems, ImageSize,
+                                   ModalityDataItems, MultiModalDataItems,
+                                   MultiModalDataParser)
+from vllm.multimodal.inputs import (ImageItem, ModalityData,
+                                    MultiModalFieldConfig, MultiModalKwargs,
+                                    VideoItem)
+from vllm.multimodal.processing import (BaseMultiModalProcessor,
+                                        BaseProcessingInfo, PromptReplacement)
 
 from .custom.configuration_kino_qwen2_5 import KinoQwen2_5_VLConfig
 from .custom.processing_kino_qwen2_5 import KinoQwen2_5_VLProcessor
@@ -711,7 +720,60 @@ class Qwen2_5_VisionTransformer(nn.Module):
         return loaded_params
 
 
-class Qwen2_5_VLProcessingInfo(Qwen2VLProcessingInfo):
+def _qwen2vl_field_config(hf_inputs: Mapping[str, torch.Tensor]):
+    image_grid_thw = hf_inputs.get("image_grid_thw", torch.empty((0, 3)))
+    image_grid_sizes = image_grid_thw.prod(-1)
+
+    video_grid_thw = hf_inputs.get("video_grid_thw", torch.empty((0, 3)))
+    video_grid_sizes = video_grid_thw.prod(-1)
+
+    return dict(
+        pixel_values=MultiModalFieldConfig.flat_from_sizes(
+            "image", image_grid_sizes),
+        image_embeds=MultiModalFieldConfig.flat_from_sizes(
+            "image", image_grid_sizes),
+        image_grid_thw=MultiModalFieldConfig.batched("image"),
+        pixel_values_videos=MultiModalFieldConfig.flat_from_sizes(
+            "video", video_grid_sizes),
+        video_embeds=MultiModalFieldConfig.flat_from_sizes(
+            "video", video_grid_sizes),
+        video_grid_thw=MultiModalFieldConfig.batched("video"),
+    )
+
+
+class KinoQwen2_5_VLMultiModalDataParser(MultiModalDataParser):
+
+    def _parse_image_data(
+        self,
+        data: Union[dict[str, torch.Tensor], ModalityData[ImageItem]],
+    ) -> ModalityDataItems[Any, Any]:
+        if isinstance(data, dict):
+            return DictEmbeddingItems(
+                data,
+                modality="image",
+                fields_config=_qwen2vl_field_config(data),
+                required_fields={"image_embeds", "image_grid_thw"},
+            )
+
+        return super()._parse_image_data(data)
+
+    def _parse_video_data(
+        self,
+        data: Union[dict[str, torch.Tensor], ModalityData[VideoItem]],
+    ) -> ModalityDataItems[Any, Any]:
+        if isinstance(data, dict):
+            return DictEmbeddingItems(
+                data,
+                modality="video",
+                fields_config=_qwen2vl_field_config(data),
+                required_fields={"video_embeds", "video_grid_thw"},
+            )
+
+        return super()._parse_video_data(data)
+
+
+
+class KinoQwen2_5_VLProcessingInfo(Qwen2VLProcessingInfo):
 
     def get_hf_config(self):
         return self.ctx.get_hf_config(KinoQwen2_5_VLConfig)
@@ -783,8 +845,143 @@ class Qwen2_5_VLProcessingInfo(Qwen2VLProcessingInfo):
         assert isinstance(feature_extractor, WhisperFeatureExtractor)
         return feature_extractor
 
+class KinoQwen2_5_VLDummyInputsBuilder(BaseDummyInputsBuilder[KinoQwen2_5_VLProcessingInfo]):
 
-class Qwen2_5_VLMultiModalProcessor(Qwen2VLMultiModalProcessor):
+    def get_dummy_processor_inputs(
+        self,
+        seq_len: int,
+        mm_counts: Mapping[str, int],
+    ) -> ProcessorInputs:
+        num_images = mm_counts.get("image", 0)
+        num_videos = mm_counts.get("video", 0)
+        feature_extractor = self.info.get_audio_processor()
+
+        sampling_rate = feature_extractor.sampling_rate
+        audio_len = feature_extractor.chunk_length * sampling_rate
+        num_audios = mm_counts.get("audio", 0)
+
+        hf_processor = self.info.get_hf_processor()
+        image_token: str = hf_processor.image_token
+        video_token: str = hf_processor.video_token
+        audio_token: str = hf_processor.audio_token
+
+        target_width, target_height = \
+            self.info.get_image_size_with_most_features()
+        target_num_frames = \
+            self.info.get_num_frames_with_most_features(seq_len)
+
+        mm_data = {
+            "image":
+            self._get_dummy_images(width=target_width,
+                                   height=target_height,
+                                   num_images=num_images),
+            "video":
+            self._get_dummy_videos(
+                width=target_width,
+                height=target_height,
+                num_frames=target_num_frames,
+                num_videos=num_videos,
+            ),
+            "audio":
+            self._get_dummy_audios(length=audio_len, num_audios=num_audios)
+        }
+
+        return ProcessorInputs(
+            prompt_text=image_token * num_images + video_token * num_videos + audio_token * num_audios,
+            mm_data=mm_data,
+        )
+
+
+class KinoQwen2_5_VLMultiModalProcessor(BaseMultiModalProcessor[KinoQwen2_5_VLProcessingInfo]):
+
+    def _get_data_parser(self) -> KinoQwen2_5_VLMultiModalDataParser:
+        feature_extractor = self.info.get_audio_processor()
+        return KinoQwen2_5_VLMultiModalDataParser(target_sr=feature_extractor.sampling_rate)
+    
+    def _call_hf_processor(
+        self,
+        prompt: str,
+        mm_data: Mapping[str, object],
+        mm_kwargs: Mapping[str, Any],
+    ) -> BatchFeature:
+        # Text-only input not supported in composite processor
+        if not mm_data or not mm_data.get("audios", []):
+            prompt_ids = self.info.get_tokenizer().encode(prompt)
+            prompt_ids = self._apply_hf_processor_tokens_only(prompt_ids)
+            return BatchFeature(dict(input_ids=[prompt_ids]), tensor_type="pt")
+
+        feature_extractor = self.info.get_audio_processor(**mm_kwargs)
+        mm_kwargs = dict(
+            **mm_kwargs,
+            sampling_rate=feature_extractor.sampling_rate,
+        )
+
+        return super()._call_hf_processor(
+            prompt=prompt,
+            mm_data=mm_data,
+            mm_kwargs=mm_kwargs,
+        )
+
+
+    def _get_prompt_replacements(
+        self,
+        mm_items: MultiModalDataItems,
+        hf_processor_mm_kwargs: Mapping[str, Any],
+        out_mm_kwargs: MultiModalKwargs,
+    ) -> list[PromptReplacement]:
+        hf_processor = self.info.get_hf_processor(**hf_processor_mm_kwargs)
+        image_processor = self.info.get_image_processor(
+            **hf_processor_mm_kwargs)
+        tokenizer = self.info.get_tokenizer()
+        vocab = tokenizer.get_vocab()
+
+        feature_attention_mask = out_mm_kwargs.get("audio_attention_mask")
+        if feature_attention_mask is None:
+            audio_output_lengths = []
+        else:
+            assert isinstance(feature_attention_mask, torch.Tensor)
+            _, audio_output_lens = _get_feat_extract_output_lengths(
+                feature_attention_mask.sum(-1))
+
+            audio_output_lengths = audio_output_lens.tolist()
+
+
+        # NOTE: Only Qwen2VLProcessor in transformers 4.47.0 has
+        # image_token and video_token registered
+        placeholder = {
+            "image": vocab[hf_processor.image_token],
+            "video": vocab[hf_processor.video_token],
+            "audio": vocab[hf_processor.audio_token]
+        }
+
+        merge_length = image_processor.merge_size**2
+
+        def get_replacement_qwen2vl(item_idx: int, modality: str):
+            if "modality" != "audio":
+                grid_thw = out_mm_kwargs[f"{modality}_grid_thw"][item_idx]
+                assert isinstance(grid_thw, torch.Tensor)
+
+                num_tokens = int(grid_thw.prod()) // merge_length
+            else:
+                num_tokens = audio_output_lengths[item_idx]
+                if num_tokens == 0:
+                    audios = mm_items.get_items("audio", AudioProcessorItems)
+                    audio = audios.get(item_idx)
+                    raise ValueError(
+                        f"The audio {audio} (len={len(audio)}) is too short "
+                        "to be represented inside the model")
+
+            
+            return [placeholder[modality]] * num_tokens
+
+        return [
+            PromptReplacement(
+                modality=modality,
+                target=[placeholder[modality]],
+                replacement=partial(get_replacement_qwen2vl,
+                                    modality=modality),
+            ) for modality in ("image", "video", "audio")
+        ]
 
     def _get_mm_fields_config(
         self,
@@ -792,15 +989,17 @@ class Qwen2_5_VLMultiModalProcessor(Qwen2VLMultiModalProcessor):
         hf_processor_mm_kwargs: Mapping[str, object],
     ) -> Mapping[str, MultiModalFieldConfig]:
         return dict(
-            **super()._get_mm_fields_config(hf_inputs, hf_processor_mm_kwargs),
+            **_qwen2vl_field_config(hf_inputs),
             second_per_grid_ts=MultiModalFieldConfig.batched("video"),
+            audio_values=MultiModalFieldConfig.batched("audio"),
+            audio_attention_mask=MultiModalFieldConfig.batched("audio"),
         )
 
 
 @MULTIMODAL_REGISTRY.register_processor(
-    Qwen2_5_VLMultiModalProcessor,
-    info=Qwen2_5_VLProcessingInfo,
-    dummy_inputs=Qwen2_5_VLDummyInputsBuilder)
+    KinoQwen2_5_VLMultiModalProcessor,
+    info=KinoQwen2_5_VLProcessingInfo,
+    dummy_inputs=KinoQwen2_5_VLDummyInputsBuilder)
 class KinoQwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
                                              SupportsLoRA, SupportsPP):
     packed_modules_mapping = {
