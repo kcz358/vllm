@@ -12,7 +12,7 @@ def print_outputs(outputs, modalities):
     for output in outputs:
         prompt = output.prompt
         generated_text = output.outputs[0].text
-        print(f"Prompt: {prompt!r}")
+        # print(f"Prompt: {prompt!r}")
         print(f"Generated text: {generated_text!r}")
     print("-" * 80)
 
@@ -71,9 +71,17 @@ def run_audio(question: str, audio_count: int):
     stop_token_ids = None
     return llm, prompt, stop_token_ids
 
-def run_qwen2_vl(question: str):
+def run_image(question: str):
     prompt = ("<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
               "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>"
+              f"{question}<|im_end|>\n"
+              "<|im_start|>assistant\n")
+    stop_token_ids = None
+    return llm, prompt, stop_token_ids
+
+def run_video(question: str):
+    prompt = ("<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
+              "<|im_start|>user\n<|vision_start|><|video_pad|><|vision_end|>"
               f"{question}<|im_end|>\n"
               "<|im_start|>assistant\n")
     stop_token_ids = None
@@ -100,7 +108,7 @@ def get_multi_modal_input(modality):
     if modality == "video":
         # Input video and question
         video = VideoAsset(name="sample_demo_1.mp4",
-                           num_frames=args.num_frames).np_ndarrays
+                           num_frames=128).np_ndarrays
         vid_question = "Why is this video funny?"
 
         return {
@@ -114,8 +122,10 @@ def get_multi_modal_input(modality):
 
 
 def main(args):
+    # Text inputs
     run_text()
 
+    # Audio inputs
     audio_count = args.num_audios
     llm, prompt, stop_token_ids = run_audio(
         question_per_audio_count[audio_count], audio_count)
@@ -123,7 +133,7 @@ def main(args):
     # We set temperature to 0.2 so that outputs can be different
     # even when all prompts are identical when running batch inference.
     sampling_params = SamplingParams(temperature=0.2,
-                                     max_tokens=64,
+                                     max_tokens=128,
                                      stop_token_ids=stop_token_ids)
 
     mm_data = {}
@@ -145,12 +155,75 @@ def main(args):
 
     print_outputs(outputs, "audio")
 
+
+    ## Image Input
+
     image_inputs = get_multi_modal_input("image")
+
+    data = image_inputs["data"]
+    question = image_inputs["question"]
+
+    llm, prompt, stop_token_ids = run_image(question)
+    
+    assert args.num_prompts > 0
+    if args.num_prompts == 1:
+        # Single inference
+        inputs = {
+            "prompt": prompt,
+            "multi_modal_data": {
+                "image": data
+            },
+        }
+
+    else:
+        # Batch inference
+        inputs = [{
+            "prompt": prompt,
+            "multi_modal_data": {
+                "image": data
+            },
+        } for _ in range(args.num_prompts)]
+
+    outputs = llm.generate(inputs, sampling_params=sampling_params)
+    print_outputs(outputs, "image")
+
+
+    # Video Inputs
+    video_inputs = get_multi_modal_input("video")
+
+    data = video_inputs["data"]
+    question = video_inputs["question"]
+
+    llm, prompt, stop_token_ids = run_video(question)
+
+    assert args.num_prompts > 0
+    if args.num_prompts == 1:
+        # Single inference
+        inputs = {
+            "prompt": prompt,
+            "multi_modal_data": {
+                "video": data
+            },
+        }
+
+    else:
+        # Batch inference
+        inputs = [{
+            "prompt": prompt,
+            "multi_modal_data": {
+                "video": data
+            },
+        } for _ in range(args.num_prompts)]
+
+    outputs = llm.generate(inputs, sampling_params=sampling_params)
+    print_outputs(outputs, "video")
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--num-audios", type=int, help="The count of the audio", default=1)
-    parser.add_argument("--num-prompts", type=int, help="The count of the audio", default=1)
+    parser.add_argument("--num-prompts", type=int, help="The number of prompts", default=4)
     args = parser.parse_args()
     llm = LLM(model="Evo-LMM/kino-7b-qwen2_5_caps_conv", trust_remote_code=True)
     sampling_params = SamplingParams(temperature=0, max_tokens=1024)

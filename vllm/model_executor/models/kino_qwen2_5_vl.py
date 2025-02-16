@@ -907,10 +907,10 @@ class KinoQwen2_5_VLMultiModalProcessor(BaseMultiModalProcessor[KinoQwen2_5_VLPr
         mm_kwargs: Mapping[str, Any],
     ) -> BatchFeature:
         # Text-only input not supported in composite processor
-        if not mm_data or not mm_data.get("audios", []):
-            prompt_ids = self.info.get_tokenizer().encode(prompt)
-            prompt_ids = self._apply_hf_processor_tokens_only(prompt_ids)
-            return BatchFeature(dict(input_ids=[prompt_ids]), tensor_type="pt")
+        # if not mm_data or not mm_data.get("audios", []):
+            # prompt_ids = self.info.get_tokenizer().encode(prompt)
+            # prompt_ids = self._apply_hf_processor_tokens_only(prompt_ids)
+            # return BatchFeature(dict(input_ids=[prompt_ids]), tensor_type="pt")
 
         feature_extractor = self.info.get_audio_processor(**mm_kwargs)
         mm_kwargs = dict(
