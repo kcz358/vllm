@@ -9,4 +9,4 @@ vllm serve Evo-LMM/kino-7b-qwen2_5_caps_conv \
     --trust-remote-code \
     --gpu-memory-utilization 0.8 \
     --limit-mm-per-prompt "image=1,video=1,audio=1" \
-    --max-model-len 128000 --enforce-eager
+    --max-model-len 256000

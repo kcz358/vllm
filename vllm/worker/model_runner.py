@@ -698,34 +698,33 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
         if self.runner.model_config.uses_mrope:
             image_grid_thw = mm_kwargs.get("image_grid_thw", None)
             video_grid_thw = mm_kwargs.get("video_grid_thw", None)
-            if image_grid_thw is not None and video_grid_thw is not None:
-                assert image_grid_thw is not None or video_grid_thw is not None, (
-                    "mrope embedding type requires multi-modal input mapper "
-                    "returns 'image_grid_thw' or 'video_grid_thw'.")
+            assert image_grid_thw is not None or video_grid_thw is not None, (
+                "mrope embedding type requires multi-modal input mapper "
+                "returns 'image_grid_thw' or 'video_grid_thw'.")
 
-                second_per_grid_ts = mm_kwargs.get("second_per_grid_ts", None)
-                hf_config = self.runner.model_config.hf_config
+            second_per_grid_ts = mm_kwargs.get("second_per_grid_ts", None)
+            hf_config = self.runner.model_config.hf_config
 
-                inter_data.mrope_input_positions = [None] * inter_data.n_seqs
-                for seq_idx in range(inter_data.n_seqs):
-                    seq_data = seq_group_metadata.seq_data[
-                        inter_data.seq_ids[seq_idx]]
-                    token_ids = seq_data.get_token_ids()
+            inter_data.mrope_input_positions = [None] * inter_data.n_seqs
+            for seq_idx in range(inter_data.n_seqs):
+                seq_data = seq_group_metadata.seq_data[
+                    inter_data.seq_ids[seq_idx]]
+                token_ids = seq_data.get_token_ids()
 
-                    mrope_input_positions, mrope_position_delta = \
-                        MRotaryEmbedding.get_input_positions(
-                            token_ids,
-                            hf_config=hf_config,
-                            image_grid_thw=image_grid_thw,
-                            video_grid_thw=video_grid_thw,
-                            second_per_grid_ts=second_per_grid_ts,
-                            context_len=inter_data.context_lens[seq_idx],
-                            seq_len=inter_data.seq_lens[seq_idx],
-                        )
+                mrope_input_positions, mrope_position_delta = \
+                    MRotaryEmbedding.get_input_positions(
+                        token_ids,
+                        hf_config=hf_config,
+                        image_grid_thw=image_grid_thw,
+                        video_grid_thw=video_grid_thw,
+                        second_per_grid_ts=second_per_grid_ts,
+                        context_len=inter_data.context_lens[seq_idx],
+                        seq_len=inter_data.seq_lens[seq_idx],
+                    )
 
-                    seq_data.mrope_position_delta = mrope_position_delta
-                    inter_data.mrope_input_positions[
-                        seq_idx] = mrope_input_positions
+                seq_data.mrope_position_delta = mrope_position_delta
+                inter_data.mrope_input_positions[
+                    seq_idx] = mrope_input_positions
 
     def add_seq_group(self, seq_group_metadata: SequenceGroupMetadata):
         """Add a sequence group to the builder."""
