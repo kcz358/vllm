@@ -23,8 +23,8 @@ import argparse
 
 # Modify OpenAI's API key and API base to use vLLM's API server.
 openai_api_key = "EMPTY"
-# openai_api_base = "http://localhost:8181/v1"
-openai_api_base = "https://kino.lmms-lab.com/v1"
+openai_api_base = "http://localhost:30000/v1"
+# openai_api_base = "https://kino.lmms-lab.com/v1"
 
 client = OpenAI(
     # defaults to os.environ.get("OPENAI_API_KEY")

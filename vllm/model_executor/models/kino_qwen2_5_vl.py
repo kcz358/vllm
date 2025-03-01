@@ -929,7 +929,7 @@ class KinoQwen2_5_VLMultiModalProcessor(BaseMultiModalProcessor[KinoQwen2_5_VLPr
         )
 
 
-    def _get_prompt_replacements(
+    def _get_prompt_updates(
         self,
         mm_items: MultiModalDataItems,
         hf_processor_mm_kwargs: Mapping[str, Any],
@@ -1384,8 +1384,6 @@ class KinoQwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-        kv_caches: List[torch.Tensor],
-        attn_metadata: AttentionMetadata,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs: object,
@@ -1428,7 +1426,7 @@ class KinoQwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
                 inputs_embeds = None
             else:
                 # When image and video all is not None
-                if uses_mrope(self.config) and (image_input is not None and video_input is not None):
+                if uses_mrope(self.config):
                     assert positions.ndim == 2 and positions.size(0) == 3, (
                         "multimodal section rotary embedding requires "
                         f"(3, seq_len) positions, but got {positions.size()}")
@@ -1442,8 +1440,6 @@ class KinoQwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
         hidden_states = self.language_model.model(
             input_ids=input_ids,
             positions=positions,
-            kv_caches=kv_caches,
-            attn_metadata=attn_metadata,
             intermediate_tensors=intermediate_tensors,
             inputs_embeds=inputs_embeds,
         )
