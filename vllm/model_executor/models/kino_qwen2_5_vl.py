@@ -1269,15 +1269,24 @@ class KinoQwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
         selected_audio_feature = audio_outputs.last_hidden_state
         audio_features = self.audio_modal_projector(selected_audio_feature)
         num_audios, max_audio_tokens, embed_dim = audio_features.shape
+        # Audio feature is in (bs, max_seq_len, hidden_size)
+        # If directly masked scatter, the embed will be place one by one (order is incorret)
+        # We remove the padded values first
+        unpadded_audio_features = [
+            audio_feat[:audio_output_length]
+            for audio_feat, audio_output_length in zip(
+                audio_features, audio_output_lengths
+            )
+        ]
+        # Concat the audio features
+        # Should exactly have audio_mask.sum() values
+        unpadded_audio_features = torch.concatenate(
+            unpadded_audio_features, dim=0
+        )
         audio_output_lengths = audio_output_lengths.unsqueeze(1)
-        audio_features_mask = torch.arange(max_audio_tokens).expand(
-            num_audios, max_audio_tokens).to(
-                audio_output_lengths.device) < audio_output_lengths
-        masked_audio_features = audio_features[audio_features_mask].view(
-            -1, embed_dim)
 
         # Split to tuple of embeddings for individual audio input.
-        return torch.split(masked_audio_features,
+        return torch.split(unpadded_audio_features,
                            audio_output_lengths.flatten().tolist())
 
     def _parse_and_validate_multimodal_inputs(self, **kwargs: object) -> dict:
