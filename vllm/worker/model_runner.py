@@ -693,11 +693,17 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
 
         inter_data.multi_modal_kwargs = mm_kwargs
         inter_data.multi_modal_placeholder_maps = placeholder_maps
+        audio_values = mm_kwargs.get("audio_values", None)
 
         # special processing for mrope position deltas.
         if self.runner.model_config.uses_mrope:
             image_grid_thw = mm_kwargs.get("image_grid_thw", None)
             video_grid_thw = mm_kwargs.get("video_grid_thw", None)
+            # When image and video are not avail, but audio values are avail,
+            # we can skip the mrope position computation. Otherwise raise error
+            if image_grid_thw is None and video_grid_thw is None:
+                if audio_values is not None:
+                    return
             assert image_grid_thw is not None or video_grid_thw is not None, (
                 "mrope embedding type requires multi-modal input mapper "
                 "returns 'image_grid_thw' or 'video_grid_thw'.")

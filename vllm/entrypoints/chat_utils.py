@@ -423,9 +423,12 @@ class BaseMultiModalItemTracker(ABC, Generic[_T]):
         elif modality == "audio":
             if model_type == "ultravox":
                 return "<|audio|>"
-            if model_type == "qwen2_audio" or model_type == "kino_qwen2_5_vl":
+            if model_type == "qwen2_audio":
                 return (f"Audio {current_count}: "
                         f"<|audio_bos|><|AUDIO|><|audio_eos|>")
+            if model_type == "kino_qwen2_5_vl":
+                return (f"Audio {current_count}: "
+                        f"<|AUDIO|>")
             if model_type == "minicpmo":
                 return "(<audio>./</audio>)"
             raise TypeError(f"Unknown model type: {model_type}")

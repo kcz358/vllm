@@ -1421,12 +1421,13 @@ class KinoQwen2_5_VLForConditionalGeneration(nn.Module, SupportsMultiModal,
             image_input = self._parse_and_validate_image_input(**kwargs)
             video_input = self._parse_and_validate_video_input(**kwargs)
             audio_input = self._parse_and_validate_audio_input(**kwargs)
+            only_audio = (image_input is None and video_input is None) and audio_input is not None
 
             if image_input is None and video_input is None and audio_input is None:
                 inputs_embeds = None
             else:
                 # When image and video all is not None
-                if uses_mrope(self.config):
+                if uses_mrope(self.config) and not only_audio:
                     assert positions.ndim == 2 and positions.size(0) == 3, (
                         "multimodal section rotary embedding requires "
                         f"(3, seq_len) positions, but got {positions.size()}")
